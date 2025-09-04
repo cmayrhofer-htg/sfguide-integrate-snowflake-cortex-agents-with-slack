@@ -53,6 +53,13 @@ create or replace stage semantic_models encryption = (type = 'snowflake_sse') di
 -- run the following statement to create a snowflake managed internal stage to store the pdf documents.
 create or replace stage pdfs encryption = (type = 'snowflake_sse') directory = ( enable = true );
 
-ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'AWS_US';
+alter account set cortex_enabled_cross_region = 'AWS_US';
+
+create or replace authentication policy pat_authentication_policy
+  pat_policy=(
+    network_policy_evaluation = ENFORCED_NOT_REQUIRED
+);
+
+alter user dash set authentication policy pat_authentication_policy;
 
 select 'Congratulations! Setup has completed successfully!' as status;
