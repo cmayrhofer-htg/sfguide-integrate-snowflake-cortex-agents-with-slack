@@ -20,8 +20,7 @@ class CortexChat:
 
     def _retrieve_response(self, query: str, limit=1) -> dict[str, any]:
         """Enhanced response retrieval with real-time streaming and planning display."""
-        
-        # Payload format based on Snowflake Cortex Agents REST API documentation
+
         payload = {
             "messages": [
             {
@@ -138,7 +137,6 @@ class CortexChat:
                                                 latest_step = planning_updates[-1] if planning_updates else "Processing..."
                                                 
                                                 # Show summary with step count and latest step (no button while thinking)
-                                                # summary_text = f"*🤔 Thinking...* ⚡ *{step_count} steps*\n\n_Latest: {latest_step}_"
                                                 summary_text = f"*🤔 Thinking...*\n\n_Latest: {latest_step}_"
                                                 
                                                 blocks = [

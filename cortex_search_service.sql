@@ -1,28 +1,30 @@
-USE DASH_DB.DASH_SCHEMA;
-USE WAREHOUSE DASH_S;
+use role snowflake_intelligence_admin;
+
+use dash_agent_slack.data;
+use warehouse dash_agent_wh;
 
 create or replace table parse_pdfs as 
-select relative_path, SNOWFLAKE.CORTEX.PARSE_DOCUMENT(@DASH_DB.DASH_SCHEMA.DASH_PDFS,relative_path,{'mode':'LAYOUT'}) as data
-    from directory(@DASH_DB.DASH_SCHEMA.DASH_PDFS);
+select relative_path, snowflake.cortex.parse_document(@dash_agent_slack.data.pdfs,relative_path,{'mode':'layout'}) as data
+    from directory(@dash_agent_slack.data.pdfs);
 
 create or replace table parsed_pdfs as (
     with tmp_parsed as (select
         relative_path,
-        SNOWFLAKE.CORTEX.SPLIT_TEXT_RECURSIVE_CHARACTER(TO_VARIANT(data):content, 'MARKDOWN', 1800, 300) AS chunks
-    from parse_pdfs where TO_VARIANT(data):content is not null)
+        snowflake.cortex.split_text_recursive_character(to_variant(data):content, 'markdown', 1800, 300) as chunks
+    from parse_pdfs where to_variant(data):content is not null)
     select
-        TO_VARCHAR(c.value) as PAGE_CONTENT,
-        REGEXP_REPLACE(relative_path, '\\.pdf$', '') as TITLE,
-        'DASH_DB.DASH_SCHEMA.DASH_PDFS' as INPUT_STAGE,
-        RELATIVE_PATH as RELATIVE_PATH
-    from tmp_parsed p, lateral FLATTEN(INPUT => p.chunks) c
+        to_varchar(c.value) as page_content,
+        regexp_replace(relative_path, '\\.pdf$', '') as title,
+        'dash_agent_slack.data.pdfs' as input_stage,
+        relative_path as relative_path
+    from tmp_parsed p, lateral flatten(input => p.chunks) c
 );
 
-create or replace CORTEX SEARCH SERVICE DASH_DB.DASH_SCHEMA.VEHICLES_INFO
-ON PAGE_CONTENT
-WAREHOUSE = DASH_S
-TARGET_LAG = '1 hour'
-AS (
-    SELECT '' AS PAGE_URL, PAGE_CONTENT, TITLE, RELATIVE_PATH
-    FROM parsed_pdfs
+create or replace cortex search service dash_agent_slack.data.vehicles_info
+on page_content
+warehouse = dash_agent_wh
+target_lag = '1 hour'
+as (
+    select '' as page_url, page_content, title, relative_path
+    from parsed_pdfs
 );

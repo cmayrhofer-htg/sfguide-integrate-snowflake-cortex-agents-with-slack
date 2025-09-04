@@ -9,36 +9,6 @@ from dotenv import load_dotenv
 from snowflake.snowpark import Session
 import cortex_chat
 
-def smart_truncate(text, max_length=300, suffix="..."):
-    """Smart truncation that preserves word and sentence boundaries."""
-    if len(text) <= max_length:
-        return text
-        
-    # First try to truncate at sentence boundary
-    sentences = text.split('. ')
-    if len(sentences) > 1:
-        truncated = ""
-        for sentence in sentences:
-            test_text = truncated + sentence + ". "
-            if len(test_text) + len(suffix) <= max_length:
-                truncated = test_text
-            else:
-                break
-        if truncated.strip():
-            return truncated.strip() + suffix
-    
-    # If no good sentence boundary, truncate at word boundary
-    words = text.split()
-    truncated = ""
-    for word in words:
-        test_text = truncated + word + " "
-        if len(test_text) + len(suffix) <= max_length:
-            truncated = test_text
-        else:
-            break
-    
-    return truncated.strip() + suffix if truncated.strip() else text[:max_length-len(suffix)] + suffix
-
 load_dotenv()
 
 ACCOUNT = os.getenv("ACCOUNT")
@@ -103,7 +73,6 @@ def handle_direct_message(message, say, client, body):
     # Only respond to direct messages (not in channels unless mentioned)
     if message.get('channel_type') == 'im':
         handle_message_event(message, say, client, body)
-
 
 def handle_message_event(event, say, client, body):
     """Main handler for processing user messages with Cortex Agent."""
@@ -404,7 +373,6 @@ def handle_planning_details_toggle(ack, body, say):
         # Fallback message
         say(f"❌ Error toggling planning details: {e}")
 
-
 @app.event("message")
 def handle_message_events(ack, body, say):
     try:
@@ -456,11 +424,40 @@ def handle_message_events(ack, body, say):
             ]
         )
 
+def smart_truncate(text, max_length=300, suffix="..."):
+    """Smart truncation that preserves word and sentence boundaries."""
+    if len(text) <= max_length:
+        return text
+        
+    # First try to truncate at sentence boundary
+    sentences = text.split('. ')
+    if len(sentences) > 1:
+        truncated = ""
+        for sentence in sentences:
+            test_text = truncated + sentence + ". "
+            if len(test_text) + len(suffix) <= max_length:
+                truncated = test_text
+            else:
+                break
+        if truncated.strip():
+            return truncated.strip() + suffix
+    
+    # If no good sentence boundary, truncate at word boundary
+    words = text.split()
+    truncated = ""
+    for word in words:
+        test_text = truncated + word + " "
+        if len(test_text) + len(suffix) <= max_length:
+            truncated = test_text
+        else:
+            break
+    
+    return truncated.strip() + suffix if truncated.strip() else text[:max_length-len(suffix)] + suffix
+
 def ask_agent(prompt, say):
     """Enhanced agent interaction with real-time streaming."""
     resp = CORTEX_APP.chat(prompt)
     return resp
-
 
 def format_text_for_slack(text):
     """Convert markdown formatting to Slack's mrkdwn format."""

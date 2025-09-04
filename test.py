@@ -61,16 +61,8 @@ def get_snowflake_connection():
         print(f"   Failed to connect to Snowflake: {e}")
         return None
 
-# questions = [
-#     "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?",
-#     "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?", 
-#     "What are the payment terms for Snowtires? "
-# ]
-
 questions = [
-    "Show me the trend of sales by product category between June and August",
-    # "What issues are reported with jackets recently in customer support tickets?", 
-    # "Why did sales of Fitness Wear grow so much in July?"
+    "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?",
 ]
 
 def test_raw_api_response(question, question_num):
