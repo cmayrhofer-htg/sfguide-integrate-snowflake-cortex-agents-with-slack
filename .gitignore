@@ -9,3 +9,11 @@ venv/lib/*
 venv/include/*
 venv/share/*
 default.sqlite
+debug_traces.py
+final_test.py
+find_responses.py
+.gitignore
+sample_responses
+streaming_demo.py
+test_parser.py
+README_PARSER.md

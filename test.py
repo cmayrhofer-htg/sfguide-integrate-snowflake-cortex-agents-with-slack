@@ -1,74 +1,147 @@
 import os
 import json
 import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+import snowflake.connector
 from dotenv import load_dotenv
-import generate_jwt
-from generate_jwt import JWTGenerator
+from cortex_chat import CortexChat
+
+DEBUG = False
+
+# Set up matplotlib for better display
+plt.style.use('default')
 
 # Load environment variables from .env
 load_dotenv()
 
 # Instantiate JWT generator and get token
-jwt = JWTGenerator(os.getenv("ACCOUNT"),os.getenv("DEMO_USER"),os.getenv("RSA_PRIVATE_KEY_PATH"))
-jwt_token = jwt.get_token()
+pat = os.getenv("PAT")
 
-# Build the payload
-payload = {
-    "model": "claude-3-5-sonnet",
-    "messages": [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?"
-                }
-            ]
-        }
-    ],
-    "tools": [
-        {
-            "tool_spec": {
-                "type": "cortex_search",
-                "name": "vehicles_info_search"
-            }
-        },
-        {
-            "tool_spec": {
-                "type": "cortex_analyst_text_to_sql",
-                "name": "supply_chain"
-            }
-        }
-    ],
-    "tool_resources": {
-        "vehicles_info_search": {
-            "name": os.getenv("SEARCH_SERVICE"),
-            "max_results": 1,
-            "title_column": "title",
-            "id_column": "relative_path"
-        },
-        "supply_chain": {
-            "semantic_model_file": os.getenv("SEMANTIC_MODEL")
-        }
-    }
-}
+if DEBUG:
+    print(f"Using PAT for authentication: {pat}")
 
-# Send the POST request
-headers = {
-    "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
-    "Authorization": f"Bearer {jwt_token}",
-    "Content-Type": "application/json",
-    "Accept": "application/json"
-}
+def get_snowflake_connection():
+    """Create Snowflake connection for executing queries."""
+    try:
+        # Debug environment variables
+        if DEBUG:
+            print(f"   DEMO_USER: {os.getenv('DEMO_USER')}")
+            print(f"   HOST: {os.getenv('HOST')}")
+            print(f"   WAREHOUSE: {os.getenv('WAREHOUSE')}")
+            print(f"   PAT available: {'Yes' if os.getenv('PAT') else 'No'}")
 
-try:
-    response = requests.post(
-        os.getenv("AGENT_ENDPOINT"),
-        headers=headers,
-        data=json.dumps(payload)
+        # Get account from host if not set in ACCOUNT env var
+        account = os.getenv("ACCOUNT")
+        if not account:
+            host = os.getenv("HOST")
+            if host:
+                # Extract account from host URL
+                account = host.split('.')[0]
+                print(f"   Extracted account from host: {account}")
+        
+        print(f"   Attempting PAT authentication...")
+        conn = snowflake.connector.connect(
+            user=os.getenv("DEMO_USER"),
+            password=os.getenv("PAT"),
+            account=account,
+            warehouse=os.getenv("WAREHOUSE"),
+            role=os.getenv("DEMO_USER_ROLE")
+        )
+
+        # Test connection
+        cursor = conn.cursor()
+        cursor.execute("SELECT CURRENT_VERSION()")
+        result = cursor.fetchone()
+        cursor.close()
+        print(f"   ✅ PAT authentication successful! Snowflake version: {result[0]}")
+        return conn
+            
+    except Exception as e:
+        print(f"   Failed to connect to Snowflake: {e}")
+        return None
+
+questions = [
+    "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?",
+    # "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?", 
+    "What are the payment terms for Snowtires? "
+]
+
+def test_question(question, question_num):
+    """Test a single question with the Cortex Agent and show raw response with data execution."""
+    print(f"\n{'='*70}")
+    print(f"QUERY {question_num}: {question}")
+    print('='*70)
+    
+    # Create CortexChat instance with simplified parameters
+    cortex_chat = CortexChat(
+        agent_url=os.getenv("AGENT_ENDPOINT"),
+        pat=pat
     )
-    response.raise_for_status()
-    print("✅ Cortex Agents response:\n\n", response.text)
 
-except requests.exceptions.RequestException as e:
-    print("❌ curl error:", str(e))
+    try:
+        # Use CortexChat for simplified API interaction
+        print("\n🤖 AGENT PLANNING & EXECUTION:")
+        print("="*50)
+        
+        # Get response using CortexChat (includes real-time streaming)
+        summary = cortex_chat.chat(question)
+        
+        # Check for verification information in summary
+        print(f"\n🔍 CHECKING FOR VERIFICATION DATA:")
+        print("="*50)
+        
+        # Show what summary contains
+        print(f"📊 Summary keys available: {list(summary.keys()) if isinstance(summary, dict) else 'Not a dict'}")
+        
+        verification_found = False
+        if isinstance(summary, dict):
+            for key, value in summary.items():
+                if 'verif' in key.lower() or 'valid' in key.lower():
+                    print(f"🔍 Verification in summary - {key}: {value}")
+                    verification_found = True
+        
+        if not verification_found:
+            print("❓ No explicit verification information found in response")
+        
+        # Display only the raw API response text
+        if isinstance(summary, dict) and summary.get('text'):
+            print("\n" + "="*70)
+            print("🎯 FINAL API RESPONSE:")
+            print("="*70)
+            print(summary['text'])
+            print("="*70)
+        
+        # Show extracted SQL queries
+        if isinstance(summary, dict) and summary.get('sql_queries'):
+            print(f"\n💾 EXTRACTED {len(summary['sql_queries'])} SQL QUERIES:")
+            print("="*70)
+            
+            for i, sql_query in enumerate(summary['sql_queries'], 1):
+                print(f"\n📋 Query {i}:")
+                print("-" * 40)
+                print(sql_query)
+                print("-" * 40)
+            
+            print(f"\n✅ CORTEX EXECUTION COMPLETE")
+            print("="*50)
+        else:
+            print("\n❓ No SQL queries found in response")
+        
+        return True
+        
+    except Exception as e:
+        print(f"\nError: {e}")
+        return False
+
+# Test Cortex API with real-time planning display, SQL execution and visualization
+print("\n🚀 Testing Cortex Agent API with real-time planning/thinking display")
+print("="*70)
+
+for i, question in enumerate(questions, 1):
+    success = test_question(question, i)
+    if i < len(questions):
+        import time
+        time.sleep(2)
+
+print("\nTest completed.")
