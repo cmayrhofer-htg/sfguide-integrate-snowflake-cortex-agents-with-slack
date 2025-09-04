@@ -28,3 +28,5 @@ as (
     select '' as page_url, page_content, title, relative_path
     from parsed_pdfs
 );
+
+select 'Congratulations! Cortex Search Service has been created successfully!' as status;

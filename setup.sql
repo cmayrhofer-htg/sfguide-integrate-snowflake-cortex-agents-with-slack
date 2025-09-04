@@ -60,6 +60,6 @@ create or replace authentication policy pat_authentication_policy
     network_policy_evaluation = ENFORCED_NOT_REQUIRED
 );
 
-alter user dash set authentication policy pat_authentication_policy;
+alter user IDENTIFIER($current_user) set authentication policy pat_authentication_policy;
 
 select 'Congratulations! Setup has completed successfully!' as status;
