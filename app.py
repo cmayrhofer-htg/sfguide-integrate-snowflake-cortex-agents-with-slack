@@ -9,6 +9,36 @@ from dotenv import load_dotenv
 from snowflake.snowpark import Session
 import cortex_chat
 
+def smart_truncate(text, max_length=300, suffix="..."):
+    """Smart truncation that preserves word and sentence boundaries."""
+    if len(text) <= max_length:
+        return text
+        
+    # First try to truncate at sentence boundary
+    sentences = text.split('. ')
+    if len(sentences) > 1:
+        truncated = ""
+        for sentence in sentences:
+            test_text = truncated + sentence + ". "
+            if len(test_text) + len(suffix) <= max_length:
+                truncated = test_text
+            else:
+                break
+        if truncated.strip():
+            return truncated.strip() + suffix
+    
+    # If no good sentence boundary, truncate at word boundary
+    words = text.split()
+    truncated = ""
+    for word in words:
+        test_text = truncated + word + " "
+        if len(test_text) + len(suffix) <= max_length:
+            truncated = test_text
+        else:
+            break
+    
+    return truncated.strip() + suffix if truncated.strip() else text[:max_length-len(suffix)] + suffix
+
 load_dotenv()
 
 ACCOUNT = os.getenv("ACCOUNT")
@@ -140,12 +170,20 @@ def handle_planning_details_toggle(ack, body, say):
         message_ts = body["message"]["ts"]
         channel_id = body["channel"]["id"]
         
-        # Get planning steps data from CORTEX_APP instance
+        # Get timeline or fallback to separate arrays
         try:
-            steps = getattr(CORTEX_APP, 'planning_steps', [])
+            timeline = getattr(CORTEX_APP, 'timeline', [])
+            # Fallback to separate arrays if timeline not available
+            if not timeline:
+                steps = getattr(CORTEX_APP, 'planning_steps', [])
+                thinking_steps = getattr(CORTEX_APP, 'thinking_steps', [])
+            else:
+                steps = []
+                thinking_steps = []
         except:
-            # Fallback to local global storage
+            timeline = []
             steps = planning_steps_data.get('steps', [])
+            thinking_steps = []
         
         if action_value == "show":
             # Show detailed planning steps with verification and SQL info
@@ -159,14 +197,58 @@ def handle_planning_details_toggle(ack, body, say):
                 }
             ]
             
-            # Add planning steps
-            if steps:
-                steps_text = "\n".join(f"• {step}" for step in steps)
+            # Add planning steps and thinking content in chronological order
+            combined_steps = []
+            
+            if timeline:
+                # Use chronological timeline for proper ordering
+                for event in timeline:
+                    if event['type'] == 'status':
+                        combined_steps.append(f" {event['content']}")
+                    elif event['type'] == 'thinking':
+                        combined_steps.append(f" {event['content']}")
+            else:
+                # Fallback to separate arrays (old behavior)
+                # Add status steps
+                if steps:
+                    for step in steps:
+                        combined_steps.append(f" {step}")
+                
+                # Add thinking steps without truncation for full content display
+                if thinking_steps:
+                    for thinking in thinking_steps:
+                        # Don't truncate thinking content - users want to see complete thoughts
+                        combined_steps.append(f" {thinking}")
+            
+            if combined_steps:
+                # Build the text but ensure it doesn't exceed Slack's 3000 character limit
+                header = "*Thinking Steps:*\n"
+                max_content_length = 2950 - len(header)  # Leave room for header and safety margin
+                
+                steps_text = ""
+                truncated = False
+                
+                for i, step in enumerate(combined_steps):
+                    step_line = f"• {step}\n"
+                    if len(steps_text) + len(step_line) <= max_content_length:
+                        steps_text += step_line
+                    else:
+                        truncated = True
+                        break
+                
+                # Remove trailing newline
+                steps_text = steps_text.rstrip('\n')
+                
+                # Add truncation notice if needed
+                if truncated:
+                    remaining_count = len(combined_steps) - i
+                    steps_text += f"\n\n_... and {remaining_count} more items (truncated for display)_"
+                
                 blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Thinking Steps:*\n{steps_text}"
+                        "text": f"{header}{steps_text}"
                     }
                 })
             
@@ -198,6 +280,12 @@ def handle_planning_details_toggle(ack, body, say):
                         if is_verified:
                             query_header += " :verified: Answer accuracy verified by agent owner"
                         
+                        # Truncate SQL if too long for Slack
+                        if len(sql_query) > 2800:
+                            displayed_sql = sql_query[:2800] + "...\n-- (SQL truncated for display)"
+                        else:
+                            displayed_sql = sql_query
+                        
                         blocks.extend([
                             {
                                 "type": "section",
@@ -210,7 +298,7 @@ def handle_planning_details_toggle(ack, body, say):
                                 "type": "section",
                                 "text": {
                                     "type": "mrkdwn",
-                                    "text": f"```sql\n{sql_query}\n```"
+                                    "text": f"```sql\n{displayed_sql}\n```"
                                 }
                             }
                         ])
@@ -249,7 +337,10 @@ def handle_planning_details_toggle(ack, body, say):
             })
         else:  # action_value == "hide"
             # Hide detailed planning steps (show summary)
-            step_count = len(steps) if steps else 0
+            if timeline:
+                step_count = len(timeline)
+            else:
+                step_count = (len(steps) if steps else 0) + (len(thinking_steps) if thinking_steps else 0)
             
             # Check what additional info is available
             additional_info = []
@@ -341,8 +432,8 @@ def handle_message_events(ack, body, say):
                     "type": "divider"
                 },
             ]
-        )
-        
+        )        
+
         # Get response with real-time streaming
         response = ask_agent(prompt, say)
         
@@ -411,7 +502,7 @@ def format_dataframe_for_slack(df):
             table_str = display_df.to_string(index=False, max_colwidth=30)
         
         return table_str
-        
+    
     except Exception as e:
         print(f"❌ Error formatting DataFrame: {e}")
         return "Error formatting data for display"
@@ -425,12 +516,12 @@ def display_agent_response(content, say):
             formatted_text = format_text_for_slack(content['text'])
             say(
                 text="🎯 Final Response",
-                blocks=[
-                    {
+                    blocks=[
+                        {
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
-                            "text": f"*🎯 Agent Response:*\n{formatted_text}"
+                            "text": f"*🎯 Snowflake Cortex Agent Response:*\n{formatted_text}"
                         }
                     }
                 ]
@@ -534,7 +625,7 @@ def get_snowflake_connection():
 def init():
     """Initialize Snowflake connection and Cortex chat."""
     conn = get_snowflake_connection()
-    
+
     cortex_app = cortex_chat.CortexChat(
         AGENT_ENDPOINT, 
         PAT
@@ -548,4 +639,4 @@ if __name__ == "__main__":
     CONN, CORTEX_APP = init()
     if CONN:
         Root = Root(CONN)
-    SocketModeHandler(app, SLACK_APP_TOKEN).start()
+        SocketModeHandler(app, SLACK_APP_TOKEN).start()

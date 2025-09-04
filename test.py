@@ -61,11 +61,96 @@ def get_snowflake_connection():
         print(f"   Failed to connect to Snowflake: {e}")
         return None
 
+# questions = [
+#     "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?",
+#     "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?", 
+#     "What are the payment terms for Snowtires? "
+# ]
+
 questions = [
-    "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?",
-    # "Can you show me a breakdown of customer support tickets by service type cellular vs business internet?", 
-    "What are the payment terms for Snowtires? "
+    "Show me the trend of sales by product category between June and August",
+    # "What issues are reported with jackets recently in customer support tickets?", 
+    # "Why did sales of Fitness Wear grow so much in July?"
 ]
+
+def test_raw_api_response(question, question_num):
+    """Test API directly and show raw response format."""
+    print(f"\n{'='*70}")
+    print(f"RAW API TEST {question_num}: {question}")
+    print('='*70)
+    
+    import requests
+    import json
+    
+    agent_url = os.getenv("AGENT_ENDPOINT")
+    
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": question
+                    }
+                ]
+            }
+        ],
+        "tool_choice": {
+            "type": "auto"
+        },
+        "stream": True
+    }
+    
+    headers = {
+        "X-Snowflake-Authorization-Token-Type": "PROGRAMMATIC_ACCESS_TOKEN",
+        "Authorization": f"Bearer {pat}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    
+    print(f"\n🔗 Making request to: {agent_url}")
+    print(f"🔑 Headers: {headers}")
+    print(f"📋 Payload: {json.dumps(payload, indent=2)}")
+    print("\n" + "="*70)
+    print("📡 RAW SSE RESPONSE STREAM:")
+    print("="*70)
+    
+    try:
+        response = requests.post(
+            agent_url,
+            headers=headers,
+            data=json.dumps(payload),
+            timeout=120,
+            stream=True
+        )
+        response.raise_for_status()
+        
+        line_count = 0
+        for line in response.iter_lines():
+            line_count += 1
+            if line:
+                line_decoded = line.decode('utf-8')
+                print(f"[{line_count:03d}] {line_decoded}")
+                
+                # Stop after reasonable number of lines to avoid spam
+                if line_count > 200:
+                    print("... [truncated for readability] ...")
+                    break
+        
+        print("\n" + "="*70)
+        print("✅ RAW RESPONSE COMPLETE")
+        print("="*70)
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ API Error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                print(f"Status Code: {e.response.status_code}")
+                print(f"Response Headers: {dict(e.response.headers)}")
+                print(f"Response Body: {e.response.text}")
+            except:
+                print("Could not get detailed error info")
 
 def test_question(question, question_num):
     """Test a single question with the Cortex Agent and show raw response with data execution."""
@@ -104,7 +189,17 @@ def test_question(question, question_num):
         if not verification_found:
             print("❓ No explicit verification information found in response")
         
-        # Display only the raw API response text
+        # Display detailed thinking steps from official API response
+        if isinstance(summary, dict) and summary.get('planning_updates'):
+            print(f"\n🧠 DETAILED THINKING PROCESS FROM CORTEX API:")
+            print("="*70)
+            planning_steps = summary['planning_updates']
+            for i, step in enumerate(planning_steps, 1):
+                print(f"   {i:2d}. {step}")
+            print(f"\n✅ Thinking completed with {len(planning_steps)} steps")
+            print("="*70)
+        
+        # Display final response
         if isinstance(summary, dict) and summary.get('text'):
             print("\n" + "="*70)
             print("🎯 FINAL API RESPONSE:")
@@ -134,7 +229,20 @@ def test_question(question, question_num):
         print(f"\nError: {e}")
         return False
 
-# Test Cortex API with real-time planning display, SQL execution and visualization
+# Test RAW API Response Format
+print("\n🔬 Testing RAW Cortex Agent API Response Format")
+print("="*70)
+
+for i, question in enumerate(questions, 1):
+    test_raw_api_response(question, i)
+    if i < len(questions):
+        import time
+        time.sleep(2)
+    break  # Only test first question for raw analysis
+
+print("\n" + "="*70)
+
+# Test Cortex API with real-time planning display, SQL execution and visualization  
 print("\n🚀 Testing Cortex Agent API with real-time planning/thinking display")
 print("="*70)
 

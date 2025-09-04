@@ -4,8 +4,8 @@ Snowflake Cortex Response Parser
 This module provides comprehensive parsing functionality for Snowflake Cortex Agent responses.
 It handles both streaming SSE (Server-Sent Events) responses and non-streaming JSON responses.
 
-Based on the Snowflake Cortex Analyst REST API documentation:
-https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-analyst/api#parsing-the-response
+Based on the REST API documentation:
+https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-rest-api#id42
 """
 
 import json
@@ -150,6 +150,7 @@ class CortexResponse:
     """Represents a complete parsed Cortex response."""
     messages: List[ParsedMessage] = field(default_factory=list)
     suggestions: List[Suggestion] = field(default_factory=list)
+    status_messages: List[str] = field(default_factory=list)  # Add status messages for planning steps
     request_id: Optional[str] = None
     
     @property
@@ -211,29 +212,97 @@ class CortexResponseParser:
         """
         response = CortexResponse()
         accumulated_content = {'text': '', 'tool_use': [], 'tool_results': []}
+        accumulated_thinking = []  # Store thinking content
+        current_event = None
         
         for line in sse_lines:
+            # Track event types
+            if line.startswith('event: '):
+                current_event = line[7:].strip()
+                continue
+            
+            # Process data lines based on current event
+            if line.startswith('data: '):
+                data_content = line[6:].strip()
+                
+                if data_content == '[DONE]':
+                    break
+                
+                try:
+                    json_data = json.loads(data_content)
+                    
+                    # Handle thinking events
+                    if current_event == 'response.thinking.delta' or current_event == 'response.thinking':
+                        if 'text' in json_data:
+                            thinking_text = json_data['text']
+                            # Extract content from <thinking> tags
+                            import re
+                            thinking_match = re.search(r'<thinking>(.*?)</thinking>', thinking_text, re.DOTALL)
+                            if thinking_match:
+                                clean_thinking = thinking_match.group(1).strip()
+                                if clean_thinking:
+                                    accumulated_thinking.append(clean_thinking)
+                    
+                    # Handle status events (planning steps)
+                    elif current_event == 'response.status':
+                        if 'message' in json_data:
+                            status_msg = json_data['message']
+                            response.status_messages.append(status_msg)
+                    
+                    # Handle response text events (final answer content)
+                    elif current_event == 'response.text.delta':
+                        if 'text' in json_data:
+                            text_content = json_data['text']
+                            # Add text content as accumulated content (only from delta events to avoid duplication)
+                            accumulated_content['text'] += text_content
+                    
+                    elif current_event == 'response.text':
+                        # Skip complete text events since we're building from deltas
+                        # This prevents duplication from both delta and complete events
+                        pass
+                    
+                    # Handle tool result events (contains SQL queries and verification info)
+                    elif current_event == 'response.tool_result':
+                        if 'content' in json_data and 'tool_use_id' in json_data:
+                            tool_result = {
+                                'tool_use_id': json_data['tool_use_id'],
+                                'content': json_data['content']
+                            }
+                            accumulated_content['tool_results'].append(tool_result)
+                    
+                except json.JSONDecodeError:
+                    pass
+            
+            # Also process using original logic for other content (but skip events we already handled)
+            # Skip text events that we already processed above to prevent duplication
             parsed_line = self._process_sse_line(line)
             
-            if parsed_line.get('type') == 'message':
-                content = parsed_line['content']
-                accumulated_content['text'] += content.get('text', '')
-                accumulated_content['tool_use'].extend(content.get('tool_use', []))
-                accumulated_content['tool_results'].extend(content.get('tool_results', []))
+            if current_event not in ['response.text.delta', 'response.text', 'response.thinking.delta', 'response.thinking', 'response.status']:
+                if parsed_line.get('type') == 'message':
+                    content = parsed_line['content']
+                    accumulated_content['text'] += content.get('text', '')
+                    accumulated_content['tool_use'].extend(content.get('tool_use', []))
+                    accumulated_content['tool_results'].extend(content.get('tool_results', []))
             
-            elif parsed_line.get('type') == 'final_message':
-                # Handle new format: create message directly from content array
-                message = ParsedMessage(
-                    role=parsed_line['role'],
-                    content=parsed_line['content']
-                )
-                response.messages.append(message)
-                # print(f"🎯 PARSER: Added final message with {len(parsed_line['content'])} content items")  # Debug
+            if parsed_line.get('type') == 'final_message':
+                # Skip final message content processing since we're already accumulating from delta events
+                # This prevents duplicate content in the final response
+                # Note: The final message contains the complete assembled content that we've already 
+                # built up from individual response.text.delta events
+                pass
             
             elif parsed_line.get('type') == 'done':
                 break
         
-        # Convert accumulated content to message
+        # Add thinking content as separate messages FIRST
+        for thinking_text in accumulated_thinking:
+            if thinking_text.strip():
+                response.messages.append(ParsedMessage(
+                    role='assistant',
+                    content=[{'type': 'thinking', 'text': thinking_text}]
+                ))
+        
+        # Convert accumulated content to message (this should be LAST so final_text picks it up)
         if accumulated_content['text'] or accumulated_content['tool_use'] or accumulated_content['tool_results']:
             message_content = []
             
@@ -520,7 +589,18 @@ class CortexResponseParser:
         verification_info = {}
         verified_query_used = False
         
+        # Collect thinking responses from messages
+        planning_updates = []
+        
         for message in response.messages:
+            # Extract thinking content
+            for content in message.content:
+                if content.get('type') == 'thinking':
+                    thinking_text = content.get('text', '').strip()
+                    if thinking_text:
+                        planning_updates.append(thinking_text)
+            
+            # Extract verification info from tool results
             for tool_result in message.tool_results:
                 tool_verification = tool_result.verification_info
                 if tool_verification:
@@ -536,7 +616,8 @@ class CortexResponseParser:
             'tool_uses': len([tool for msg in response.messages for tool in msg.tool_uses]),
             'search_results_count': len(response.search_results),
             'verification_info': verification_info,
-            'verified_query_used': verified_query_used
+            'verified_query_used': verified_query_used,
+            'planning_updates': planning_updates  # Add thinking responses
         }
     
     def debug_print(self, message: str):

@@ -90,6 +90,8 @@ class CortexChat:
             tools_used = []
             current_thinking = ""
             planning_updates = []
+            thinking_updates = []  # Track thinking content for Slack updates
+            timeline = []  # Chronological timeline of status and thinking events
             
             if DEBUG:
                 print("\n🤖 AGENT PLANNING & EXECUTION:")
@@ -123,10 +125,11 @@ class CortexChat:
                                 if current_event == 'response.status':
                                     if 'message' in json_data:
                                         status_msg = json_data['message']
-                                        print(f"📊 STATUS: {status_msg}")
+                                        print(f"🔹 STATUS: {status_msg}")
                                         
                                         # Add all planning steps to the details (now that header is "Thinking")
                                         planning_updates.append(status_msg)
+                                        timeline.append({'type': 'status', 'content': status_msg})
                                         
                                         # Update Slack in real-time for planning steps (keep collapsed by default)
                                         if self.slack_app and self.planning_message_ts and self.planning_channel:
@@ -161,6 +164,97 @@ class CortexChat:
                                                     print(f"❌ Full error: {traceback.format_exc()}")
                                     continue
                                 
+                                # Handle thinking events (real-time thinking content)
+                                elif current_event == 'response.thinking.delta':
+                                    if 'text' in json_data:
+                                        thinking_text = json_data['text']
+                                        # Extract content from <thinking> tags and print without tags
+                                        import re
+                                        thinking_match = re.search(r'<thinking>(.*?)</thinking>', thinking_text, re.DOTALL)
+                                        if thinking_match:
+                                            clean_thinking = thinking_match.group(1).strip()
+                                            if clean_thinking:
+                                                print(f"THINKING COMPLETE: {clean_thinking}")
+                                                # Replace the last thinking update with complete version
+                                                if thinking_updates:
+                                                    thinking_updates[-1] = clean_thinking
+                                                    # Update timeline entry if it exists
+                                                    for i in range(len(timeline) - 1, -1, -1):
+                                                        if timeline[i]['type'] == 'thinking':
+                                                            timeline[i]['content'] = clean_thinking.strip()
+                                                            break
+                                                else:
+                                                    thinking_updates.append(clean_thinking)
+                                                    timeline.append({'type': 'thinking', 'content': clean_thinking.strip()})
+                                                self._update_slack_with_thinking(planning_updates, thinking_updates)
+                                        else:
+                                            # Handle streaming text fragments (preserve spacing from API)
+                                            clean_text = thinking_text.replace('<thinking>', '').replace('</thinking>', '')
+                                            if clean_text:
+                                                # Check content_index to handle multiple thinking streams
+                                                content_index = json_data.get('content_index', 0)
+                                                
+                                                # Ensure we have enough thinking slots
+                                                while len(thinking_updates) <= content_index:
+                                                    thinking_updates.append("")
+                                                
+                                                # For streaming, print text directly
+                                                if not thinking_updates[content_index]:
+                                                    print(f"\nTHINKING: {clean_text}", end='', flush=True)
+                                                    # Add new thinking entry to timeline (strip leading/trailing whitespace)
+                                                    timeline.append({'type': 'thinking', 'content': clean_text.strip(), 'content_index': content_index})
+                                                else:
+                                                    print(f"{clean_text}", end='', flush=True)
+                                                
+                                                # Accumulate text exactly as provided by the API (spacing is correct)
+                                                thinking_updates[content_index] += clean_text
+                                                
+                                                # Update the timeline entry for this content_index
+                                                for i in range(len(timeline) - 1, -1, -1):
+                                                    if (timeline[i]['type'] == 'thinking' and 
+                                                        timeline[i].get('content_index') == content_index):
+                                                        timeline[i]['content'] = thinking_updates[content_index].strip()
+                                                        break
+                                                
+                                                self._update_slack_with_thinking(planning_updates, thinking_updates)
+                                    continue
+                                
+                                elif current_event == 'response.thinking':
+                                    if 'text' in json_data:
+                                        thinking_text = json_data['text']
+                                        # Extract content from <thinking> tags
+                                        import re
+                                        thinking_match = re.search(r'<thinking>(.*?)</thinking>', thinking_text, re.DOTALL)
+                                        if thinking_match:
+                                            clean_thinking = thinking_match.group(1).strip()
+                                            if clean_thinking:
+                                                print(f"\n\nTHINKING COMPLETE: {clean_thinking}")
+                                                print("=" * 50)
+                                                # Use content_index to place in correct slot
+                                                content_index = json_data.get('content_index', 0)
+                                                
+                                                # Ensure we have enough thinking slots
+                                                while len(thinking_updates) <= content_index:
+                                                    thinking_updates.append("")
+                                                
+                                                # Replace the content at the correct index
+                                                thinking_updates[content_index] = clean_thinking
+                                                
+                                                # Update or add to timeline
+                                                timeline_updated = False
+                                                for i in range(len(timeline) - 1, -1, -1):
+                                                    if (timeline[i]['type'] == 'thinking' and 
+                                                        timeline[i].get('content_index') == content_index):
+                                                        timeline[i]['content'] = clean_thinking.strip()
+                                                        timeline_updated = True
+                                                        break
+                                                
+                                                if not timeline_updated:
+                                                    timeline.append({'type': 'thinking', 'content': clean_thinking.strip(), 'content_index': content_index})
+                                                
+                                                self._update_slack_with_thinking(planning_updates, thinking_updates)
+                                    continue
+                                
                                 # Handle final response event (new format)
                                 if current_event == 'response':
                                     print(f"🎯 FINAL RESPONSE EVENT: Found final response data")
@@ -181,7 +275,7 @@ class CortexChat:
                                                     # Only show first part as thinking
                                                     if len(current_thinking) < 200:
                                                         if DEBUG:
-                                                            print(f"💭 {text_delta}", end='', flush=True)
+                                                            print(f"🧠 {text_delta}", end='', flush=True)
                                             
                                             elif content_item.get('type') == 'tool_use':
                                                 tool_data = content_item.get('tool_use', {})
@@ -191,6 +285,7 @@ class CortexChat:
                                                     if DEBUG:
                                                         print(f"\n🔧 USING TOOL: {tool_name}")
                                                     planning_updates.append(f"Using {tool_name}")
+                                                    timeline.append({'type': 'status', 'content': f"Using {tool_name}"})
                                                     
                                                     # Show tool parameters if available
                                                     if 'input' in tool_data:
@@ -239,13 +334,14 @@ class CortexChat:
                                         status_msg = json_data.get('status_message', '')
                                         if status and status not in ['REASONING_AGENT_STOP']:  # Filter noise
                                             if DEBUG:
-                                                print(f"\n📊 STATUS: {status.replace('_', ' ').title()}")
+                                                print(f"\n🔹 STATUS: {status.replace('_', ' ').title()}")
                                                 if status_msg:
                                                     print(f"   📝 {status_msg}")
                                             
                                             # Always append status messages for Slack updates (regardless of DEBUG)
                                             if status_msg:
                                                 planning_updates.append(status_msg)
+                                                timeline.append({'type': 'status', 'content': status_msg})
                                                 
                                                 # Update planning message with new steps (keep collapsed by default)
                                                 if self.slack_app and self.planning_message_ts and len(planning_updates) % 2 == 0:  # Every 2nd update
@@ -327,8 +423,21 @@ class CortexChat:
             # Extract summary for business display
             summary = self.parser.extract_summary(parsed_response)
             
+            # Display the complete final response
+            final_text = summary.get('text', '')
+            if final_text:
+                print(f"\n\n{'='*80}")
+                print("FINAL RESPONSE:")
+                print(f"{'='*80}")
+                print(final_text)
+                print(f"{'='*80}")
+            
             # Store data for collapsible planning details
             self.planning_steps = planning_updates
+            # Filter out empty thinking content for details display
+            self.thinking_steps = [content.strip() for content in thinking_updates if content and content.strip()]
+            # Store chronological timeline for proper ordering
+            self.timeline = timeline
             self.sql_queries = summary.get('sql_queries', [])
             self.verification_info = summary.get('verification_info', {})
             self.verified_query_used = summary.get('verified_query_used', False)
@@ -429,7 +538,7 @@ class CortexChat:
             # Log verification information (debug only)
             if DEBUG and (summary.get('verification_info') or summary.get('verified_query_used')):
                 print(f"\n🔍 VERIFICATION SUMMARY:")
-                print(f"   📊 Verified Query Used: {'✅ YES' if summary.get('verified_query_used') else '❌ NO'}")
+                print(f"   🔹 Verified Query Used: {'✅ YES' if summary.get('verified_query_used') else '❌ NO'}")
                 
                 verification_info = summary.get('verification_info', {})
                 if verification_info:
@@ -489,6 +598,113 @@ class CortexChat:
                 channel_id = channel_id.get('id', channel_id)
             setattr(slack_app, '_channel_id', channel_id)
     
+    def _smart_truncate(self, text, max_length=200, suffix="..."):
+        """Smart truncation that preserves word and sentence boundaries."""
+        if len(text) <= max_length:
+            return text
+        
+        # Try sentence boundary first
+        sentences = text.split('. ')
+        if len(sentences) > 1:
+            result = ""
+            for sentence in sentences:
+                test = result + sentence + ". "
+                if len(test) + len(suffix) <= max_length:
+                    result = test
+                else:
+                    break
+            if result.strip():
+                return result.strip() + suffix
+        
+        # Try word boundary
+        words = text.split()
+        result = ""
+        for word in words:
+            test = result + word + " "
+            if len(test) + len(suffix) <= max_length:
+                result = test
+            else:
+                break
+        
+        return result.strip() + suffix if result.strip() else text[:max_length-len(suffix)] + suffix
+
+    def _update_slack_with_thinking(self, planning_updates, thinking_updates):
+        """Update Slack with combined planning and thinking updates in real-time."""
+        if not (self.slack_app and self.planning_message_ts and self.planning_channel):
+            return
+            
+        try:
+            # Build appended status list (show recent status updates)
+            status_lines = []
+            
+            # Show last 8 status updates to keep it manageable
+            recent_statuses = planning_updates[-8:] if planning_updates else []
+            for status in recent_statuses:
+                status_lines.append(f"• {status}")
+            
+            # Add thinking content from all content indices
+            if thinking_updates:
+                # Combine all non-empty thinking content
+                all_thinking = []
+                for thinking_content in thinking_updates:
+                    if thinking_content and thinking_content.strip():
+                        all_thinking.append(thinking_content.strip())
+                
+                if all_thinking:
+                    # Use the most recent thinking content
+                    latest_thinking = all_thinking[-1]
+                    # Truncate thinking for real-time display to keep message manageable
+                    if len(latest_thinking) > 300:
+                        truncated_thinking = self._smart_truncate(latest_thinking, max_length=300)
+                        thinking_line = f"• {truncated_thinking}"
+                    else:
+                        thinking_line = f"• {latest_thinking}"
+                    status_lines.append(thinking_line)
+            
+            # Create the status progression text
+            if status_lines:
+                progress_text = "\n".join(status_lines)
+                summary_text = f"*🤔 Thinking...*\n\n{progress_text}"
+                
+                # Ensure we don't exceed Slack message limits (3000 chars is Slack's limit)
+                if len(summary_text) > 2900:
+                    # If too long, show fewer status updates
+                    recent_statuses = planning_updates[-4:] if planning_updates else []
+                    status_lines = [f"• {status}" for status in recent_statuses]
+                    
+                    # Add thinking if available
+                    if thinking_updates:
+                        latest_thinking = thinking_updates[-1]
+                        truncated_thinking = self._smart_truncate(latest_thinking, max_length=200)
+                        status_lines.append(f"• {truncated_thinking}")
+                    
+                    progress_text = "\n".join(status_lines)
+                    summary_text = f"*🤔 Thinking...*\n\n{progress_text}"
+            else:
+                summary_text = "*🤔 Thinking...* Processing..."
+            
+            blocks = [
+                {
+                    "type": "section", 
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": summary_text
+                    }
+                }
+            ]
+            
+            self.slack_app.client.chat_update(
+                channel=self.planning_channel,
+                ts=self.planning_message_ts,
+                blocks=blocks
+            )
+            
+        except Exception as e:
+            print(f"❌ Error updating Slack with thinking: {e}")
+        if DEBUG:
+                import traceback
+                print(f"❌ Full error: {traceback.format_exc()}")
+
     def chat(self, query: str) -> dict[str, any]:
         """
         Enhanced chat method with real-time streaming and planning display.
