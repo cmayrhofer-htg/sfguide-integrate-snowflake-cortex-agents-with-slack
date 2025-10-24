@@ -27,6 +27,14 @@ print(
 
 DEBUG = True
 
+if os.getenv("DEBUGPY_LISTEN"):  # only active when you want it
+    import debugpy
+    debugpy.listen(("127.0.0.1", 5678))
+    print("🔧 debugpy listening on 5678...")
+    # Optional: pause until VS Code attaches
+    if os.getenv("DEBUGPY_WAIT_FOR_CLIENT") == "1":
+        debugpy.wait_for_client()
+
 # Initializes app
 app = App(token=SLACK_BOT_TOKEN)
 messages = []

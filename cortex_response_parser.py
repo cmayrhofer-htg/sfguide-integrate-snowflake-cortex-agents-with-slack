@@ -151,6 +151,7 @@ class CortexResponse:
     messages: List[ParsedMessage] = field(default_factory=list)
     suggestions: List[Suggestion] = field(default_factory=list)
     status_messages: List[str] = field(default_factory=list)  # Add status messages for planning steps
+    charts: List[str] = field(default_factory=list)
     request_id: Optional[str] = None
     
     @property
@@ -289,7 +290,10 @@ class CortexResponseParser:
                 # This prevents duplicate content in the final response
                 # Note: The final message contains the complete assembled content that we've already 
                 # built up from individual response.text.delta events
-                pass
+                for _entry in parsed_line.get("content", []):
+                    if _entry.get("type") != "chart":
+                        continue
+                    response.charts.append(_entry.get("chart"))
             
             elif parsed_line.get('type') == 'done':
                 break
@@ -303,7 +307,7 @@ class CortexResponseParser:
                 ))
         
         # Convert accumulated content to message (this should be LAST so final_text picks it up)
-        if accumulated_content['text'] or accumulated_content['tool_use'] or accumulated_content['tool_results']:
+        if accumulated_content['text'] or accumulated_content['tool_use'] or accumulated_content['tool_results'] or response.chars:
             message_content = []
             
             if accumulated_content['text']:
@@ -322,6 +326,12 @@ class CortexResponseParser:
                 message_content.append({
                     'type': 'tool_results',
                     'tool_results': tool_result
+                })
+
+            for chart in response.charts:
+                message_content.append({
+                    'type': 'text',
+                    'text': json.dumps(chart),
                 })
             
             response.messages.append(ParsedMessage(
